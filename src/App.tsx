@@ -190,6 +190,23 @@ const buildPromptInput = (
   return "Write a function that computes the Nth fibonacci number recursively. Give usage for n=10, but don't try to calculate results manually, and don't explain the function.";
 };
 
+const getPromptOptionsForPlatform = (isIOS: boolean) => {
+  if (!isIOS) {
+    return PROMPT_OPTIONS;
+  }
+
+  const summarizeOption = PROMPT_OPTIONS.find(
+    (option) => option.id === 'summarize-blogpost'
+  );
+  const remainingOptions = PROMPT_OPTIONS.filter(
+    (option) => option.id !== 'summarize-blogpost'
+  );
+
+  return summarizeOption
+    ? [...remainingOptions, summarizeOption]
+    : remainingOptions;
+};
+
 const SUMMARY_SECTION_TITLE = 'Llamas on the Web';
 const SUMMARY_SUBSECTION_TITLES = new Set([
   'Functionality',
@@ -328,6 +345,7 @@ const StaticArticleNode = memo(function StaticArticleNode({
 
 function App() {
   const isIPhone = isIOSBrowser();
+  const promptOptions = getPromptOptionsForPlatform(isIPhone);
   const defaultContextLength = isIPhone ? 1024 : 2048;
   const [selectedModelId, setSelectedModelId] = useState(DEFAULT_DEMO_MODEL_ID);
   const [contextLength, setContextLength] = useState(defaultContextLength);
@@ -337,7 +355,7 @@ function App() {
   const [maxOutputTokens, setMaxOutputTokens] = useState(1024);
   const [maxOutputTokensInput, setMaxOutputTokensInput] = useState('1024');
   const [selectedPromptId, setSelectedPromptId] = useState<PromptSelection>(
-    PROMPT_OPTIONS[0].id
+    promptOptions[0].id
   );
   const [manualPrompt, setManualPrompt] = useState(DEFAULT_MANUAL_PROMPT);
   const [isShowingPresetPrompt, setIsShowingPresetPrompt] = useState(false);
@@ -1686,7 +1704,7 @@ function App() {
                   }}
                   disabled={isBusy}
                 >
-                  {PROMPT_OPTIONS.map((option) => (
+                  {promptOptions.map((option) => (
                     <option key={option.id} value={option.id}>
                       {option.label}
                     </option>
