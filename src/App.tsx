@@ -1245,8 +1245,8 @@ function App() {
           </div>
           {prefillSpeedup && decodeSpeedup ? (
             <p className="benchmark-summary">
-              WebGPU is {formatBenchmarkValue(prefillSpeedup)}x faster on
-              prefill and {formatBenchmarkValue(decodeSpeedup)}x faster on
+              WebGPU is {formatBenchmarkValue(prefillSpeedup)}x faster during
+              prefill and {formatBenchmarkValue(decodeSpeedup)}x faster during
               decode for this run.
             </p>
           ) : null}
