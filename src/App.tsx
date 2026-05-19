@@ -141,7 +141,7 @@ type LoadedModelSnapshot = {
 };
 
 const DEFAULT_MANUAL_PROMPT =
-  'Write a paragraph explaining why the privacy offered by local LLMs is so important in a world where large companies are trying to squeeze every last cent out of everyone.';
+  'Write a paragraph explaining the benefits of running local LLMs, focusing on privacy and control over data.';
 const BENCHMARK_PROMPT_TOKEN_COUNT = 512;
 const BENCHMARK_DECODE_TOKEN_COUNT = 64;
 const BENCHMARK_REPETITIONS = 1;
@@ -354,9 +354,8 @@ function App() {
   );
   const [maxOutputTokens, setMaxOutputTokens] = useState(1024);
   const [maxOutputTokensInput, setMaxOutputTokensInput] = useState('1024');
-  const [selectedPromptId, setSelectedPromptId] = useState<PromptSelection>(
-    promptOptions[0].id
-  );
+  const [selectedPromptId, setSelectedPromptId] =
+    useState<PromptSelection>('manual');
   const [manualPrompt, setManualPrompt] = useState(DEFAULT_MANUAL_PROMPT);
   const [isShowingPresetPrompt, setIsShowingPresetPrompt] = useState(false);
   const [output, setOutput] = useState('');
@@ -1381,8 +1380,7 @@ function App() {
             <p className="section-label">Live Demo</p>
             <p>The first time you run this demo, it will download a small model that will run on your device. After that, the model will be cached for future use (try it in airplane mode or wifi turned off!).</p>
             <p className="advanced-warning">
-              More memory-intensive tasks like the summarization task
-              may crash the page on smaller devices such as iPhones, where Safari limits memory usage.
+              This demo may crash or not work correctly on smaller devices such as iPhones due to memory constraints.
             </p>
             <div className="demo-controls">
             <div className="default-model-card">
@@ -1768,7 +1766,7 @@ function App() {
                   />
                 </label>
                 <div className="manual-prompt-warning">
-                  Local models may hallucinate or generate incorrect results. They are generally better at more structured tasks.
+                  Smaller models may hallucinate or generate incorrect results. They are generally better at more structured tasks.
                 </div>
               </>
             ) : null}
