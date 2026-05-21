@@ -5,13 +5,13 @@ byline: May 2026
 ---
 
 :::links
-📄 [Paper](TODO)
-💻 [GitHub](https://github.com/ggml-org/llama.cpp/tree/master/ggml/src/ggml-webgpu)
+📄 [Paper](https://arxiv.org/abs/2605.20706)
+💻 [GitHub](https://github.com/ggml-org/llama.cpp)
 :::
 
-After nearly a year of work, we're officially introducing WebGPU support for llama.cpp. With this release, users can now run almost any open-weight model in their browser, _with GPU acceleration_, making fast and local LLM inference more accessible and available than it ever has been before.
+After nearly a year of work, we're officially introducing WebGPU support for llama.cpp. Now, users can now run almost any open-weight model in their browser, _with GPU acceleration_, making fast and local LLM inference more accessible and available than it ever has been before.
 
-Wondering what browser-based inference actually looks like in practice? Go ahead and try it out below:
+Wondering what browser-based inference can look like in practice? Go ahead and try it out below:
 
 :::demo
 
@@ -23,7 +23,9 @@ That being said, local inference, and especially inference in the browser, is no
 
 ### Disclaimer: Walking in the Footsteps of Others
 
-Before we go any further into the llama.cpp x WebGPU integration, we'd first like to make clear that we are not the first LLM inference runtime for WebGPU. [ONNX Runtime](https://onnxruntime.ai/) was one of the first machine learning frameworks to add web support, and its newer WebGPU backend helps power [Transformers.js](https://huggingface.co/docs/transformers.js/index). [WebLLM](https://webllm.mlc.ai/) brings the power of [TVM](https://tvm.apache.org/) to the browser, efficiently compiling models into deployable formats. In addition, llama.cpp can already be run through the browser, albeit without WebGPU support, using the existing [wllama](https://github.com/ngxson/wllama) library. We are grateful to everyone involved in these efforts, as well as many others that we probably missed, for providing comparisons and starting points, and we're looking forward to seeing the ecosystem around WebGPU and browser-based machine learning continue to evolve.
+Before we go any further into the llama.cpp x WebGPU integration, we'd first like to make clear that we are not the first LLM inference runtime for WebGPU. [ONNX Runtime](https://onnxruntime.ai/) was one of the first machine learning frameworks to add web support, and its newer WebGPU backend helps power [Transformers.js](https://huggingface.co/docs/transformers.js/index). [WebLLM](https://webllm.mlc.ai/) brings the power of [TVM](https://tvm.apache.org/) to the browser, efficiently compiling models into deployable formats. In addition, llama.cpp was already capable of being run through the browser, albeit without WebGPU support, using the pre-existing [wllama](https://github.com/ngxson/wllama) library. We are grateful to everyone involved in these efforts, as well as many others that we probably missed, for providing comparisons and starting points, and we're looking forward to seeing the ecosystem around WebGPU and browser-based machine learning continue to evolve.
+
+![Llamas surfing on the web](./llamas-surfing.png "Appropriately, Llamas on the Web was primarily developed at UC Santa Cruz, although the llamas here would probably want a wetsuit to go surfing in Santa Cruz.")
 
 ## Llamas on the Web
 
@@ -56,13 +58,13 @@ Of course, the main benefit of using WebGPU is its performance. And since seeing
 
 Hopefully, that benchmark convinced you that WebGPU is completely worth it. And if it didn't, or the CPU ended up being faster, then please reach out and let us know; we're always looking to improve our performance on every system.
 
-Behind the scenes, we've been working hard to optimize the performance of the major bottlenecks in inference, including matrix and matrix-vector multiplication. One of the most exciting and challenging parts about WebGPU is finding shaders and parameters that work well across diverse GPUs, from high-end desktop setups to the smallest mobile phones. We have some very interesting ongoing work in this domain, so stay tuned for more information on it!
+Behind the scenes, we've been working hard to optimize the performance of the major bottlenecks in inference, including matrix and matrix-vector multiplication. One of the most exciting and challenging parts about WebGPU is writing shaders and finding parameters that work well across diverse GPUs, from high-end desktop setups to the smallest mobile phones. We have some very interesting ongoing work in this domain, so stay tuned for more information on it!
 
 Also, if you'd like to contribute data from your own machine or are curious to see performance numbers across other models and GPUs, please visit our [benchmarking site](https://abhijitramesh-webgpu-bench.static.hf.space/index.html) and check out the results.
 
 ### Future Work and Technical Report
 
-Obviously there are a ton of juicy technical details that we didn't want to weigh down this release blog post with. If you're interested, we've released a technical report [here](TODO), which discusses the design decisions that went into our implementation and reports performance numbers across different browsers, operating systems, models, etc.
+Obviously there are a ton of juicy technical details that we didn't want to weigh down this release blog post with. If you're interested, we've released a technical report [here](https://arxiv.org/abs/2605.20706), which discusses the design decisions that went into our implementation and reports performance numbers across different browsers, operating systems, models, etc.
 
 With this initial release, we're just getting started. We're already starting to see more contributions to the WebGPU backend in llama.cpp, from improving the performance and portability of different operations, to support for multi-modal vision-language models, to initial kernel fusion implementations. We will also continue to work with browser vendors to find bugs in their implementations and find ways to increase our performance across many devices. If you're interested in helping out or have ideas to help improve the llama.cpp WebGPU backend, please reach out or start a discussion in the [llama.cpp](https://github.com/ggml-org/llama.cpp) repository.
 
@@ -72,7 +74,7 @@ We're interested in seeing how people start using browser-based inference. For a
 
 ### Acknowledgements
 
-This release wouldn't be possible without the help of many talented people. [Reese Levine](https://reeselevine.github.io) leads the implementation of the WebGPU llama.cpp work as part of a group at UC Santa Cruz working under [Tyler Sorensen](https://tyler-utah.github.io/) that includes [Rithik Sharma](https://sharmarithik.github.io/rithiksharma/), [Nikhil Jain](https://nikhiljain17.github.io/), [Abhijit Ramesh](https://abhijitramesh.me/), [Zheyuan Chen](https://arbersephirotheca.github.io/), [Neha Abbas](https://www.linkedin.com/in/neha-a-827406275/), and [James Contini](https://jamescontini.com/).
+This release wouldn't be possible without the help of many talented people. [Reese Levine](https://reeselevine.github.io) leads the implementation of Llamas on the Web as part of a group at UC Santa Cruz working under [Tyler Sorensen](https://tyler-utah.github.io/) that includes [Rithik Sharma](https://sharmarithik.github.io/rithiksharma/), [Nikhil Jain](https://nikhiljain17.github.io/), [Abhijit Ramesh](https://abhijitramesh.me/), [Zheyuan Chen](https://arbersephirotheca.github.io/), [Neha Abbas](https://www.linkedin.com/in/neha-a-827406275/), and [James Contini](https://jamescontini.com/).
 
 Several outside contributors have also made significant contributions to the WebGPU llama.cpp backend, and we want to especially thank [Masashi Yoshimura](https://github.com/yomaytk) and [Chen Yuan](https://github.com/Constannnnnt) for their work. We'd also like to thank [Georgi Gerganov](https://ggerganov.com/), [Sigbjørn Skjæret](https://github.com/cisc), [Xuan-Son Nguyen](https://ngxson.com/), and the other llama.cpp maintainers for their support of this effort and making this integration possible.
 
@@ -80,4 +82,4 @@ Several outside contributors have also made significant contributions to the Web
 
 The default model used here is Gemma-3, specifically a 270M parameter Unsloth Q4\_K\_M quantized version. The reason we chose this model is that it is small enough to be loaded on many mobile phones and downloads fairly quickly. However, we had to tailor the demos here to things that come across reasonably well with such a small model. If you looked at the advanced usage section in the model loader, you might have noticed that if you were on a larger machine, you could use a Q4\_K version of Qwen 3.5 2B, or choose any model from a Hugging Face repository. Generally, larger and more recent models will feel more capable, at the expense of longer download times and less portability.
 
-[^wllama]: This package is currently a fork of wllama, but WebGPU support was also very recently integrated into the upstream package. And, thanks to wllama's developer, Xuan-Son Nguyen, upstream wllama is even more memory-efficient than the version we tested in our paper. However, upstream wllama currently does not support Safari due to lack of 64-bit memory support.
+[^wllama]: This package is currently a fork of wllama, but WebGPU support was also very recently integrated into the upstream package. And, thanks to wllama's maintainer, Xuan-Son Nguyen, upstream wllama is even more memory-efficient in Chrome on Apple M-series GPUs than the version we tested in our paper. However, upstream wllama currently does not work on Safari due to Safari's lack of 64-bit memory support.

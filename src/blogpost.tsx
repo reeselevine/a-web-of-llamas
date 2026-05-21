@@ -16,6 +16,7 @@ export type Footnote = {
 export type BlogNode =
   | { type: 'heading'; level: 2 | 3; text: string }
   | { type: 'paragraph'; text: string }
+  | { type: 'image'; alt: string; src: string; caption?: string }
   | { type: 'rewrite'; id: string; text: string }
   | { type: 'callout'; text: string }
   | { type: 'links'; items: string[] }
@@ -72,6 +73,7 @@ const parseFrontmatter = (
 };
 
 const FOOTNOTE_DEFINITION_REGEX = /^\[\^([^\]]+)\]:\s*(.*)$/;
+const IMAGE_REGEX = /^!\[([^\]]*)\]\((\S+)(?:\s+"([^"]+)")?\)$/;
 
 const parseNodes = (
   body: string
@@ -211,6 +213,18 @@ const parseNodes = (
         id: footnoteMatch[1].trim(),
         text: footnoteLines.join(' ').trim(),
         number: footnotes.length + 1,
+      });
+      continue;
+    }
+
+    const imageMatch = trimmed.match(IMAGE_REGEX);
+    if (imageMatch) {
+      flushParagraph();
+      nodes.push({
+        type: 'image',
+        alt: imageMatch[1].trim(),
+        src: imageMatch[2].trim(),
+        caption: imageMatch[3]?.trim(),
       });
       continue;
     }

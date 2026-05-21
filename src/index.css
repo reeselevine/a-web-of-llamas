@@ -49,7 +49,7 @@ blockquote {
 }
 
 .blog-header {
-  max-width: 780px;
+  max-width: 720px;
   margin: 0 auto 40px;
 }
 
@@ -430,6 +430,39 @@ blockquote {
   margin-top: 18px;
 }
 
+.article-image {
+  width: 100%;
+  margin-top: 28px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.article-image figure {
+  margin: 0;
+}
+
+.article-image img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 24px;
+  box-shadow: var(--shadow);
+}
+
+.article-image figcaption {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.blog-intro .article-image {
+  width: min(560px, calc(100vw - 92px));
+  margin-left: 0;
+  transform: none;
+}
+
 .article-rewrite-block {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 260px;
@@ -774,6 +807,12 @@ blockquote {
 
   .blog-article {
     font-size: 1.02rem;
+  }
+
+  .blog-intro .article-image {
+    width: 100%;
+    margin-left: 0;
+    transform: none;
   }
 
   .blog-article h2 {

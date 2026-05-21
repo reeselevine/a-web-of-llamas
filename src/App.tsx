@@ -4,6 +4,7 @@ import {
   ModelManager,
   Wllama,
 } from '@reeselevine/wllama-webgpu';
+import llamasSurfingImage from './content/llamas-surfing.png';
 import {
   DEFAULT_DEMO_MODEL_ID,
   DEMO_MODELS,
@@ -286,6 +287,9 @@ const INTRO_NODES =
     : BLOG_NODES.slice(0, FIRST_HEADING_INDEX);
 const ARTICLE_NODES =
   FIRST_HEADING_INDEX === -1 ? [] : BLOG_NODES.slice(FIRST_HEADING_INDEX);
+const BLOG_IMAGE_SOURCES: Record<string, string> = {
+  './llamas-surfing.png': llamasSurfingImage,
+};
 
 const StaticArticleNode = memo(function StaticArticleNode({
   node,
@@ -314,6 +318,18 @@ const StaticArticleNode = memo(function StaticArticleNode({
         className="article-block article-paragraph"
       >
         <p>{renderInlineMarkdown(node.text, FOOTNOTE_NUMBERS_BY_ID)}</p>
+      </section>
+    );
+  }
+
+  if (node.type === 'image') {
+    const imageSrc = BLOG_IMAGE_SOURCES[node.src] ?? node.src;
+    return (
+      <section key={`image-${index}`} className="article-block article-image">
+        <figure>
+          <img src={imageSrc} alt={node.alt} loading="lazy" />
+          {node.caption ? <figcaption>{node.caption}</figcaption> : null}
+        </figure>
       </section>
     );
   }
@@ -352,6 +368,8 @@ function App() {
   const [contextLengthInput, setContextLengthInput] = useState(
     String(defaultContextLength)
   );
+  const [temperature, setTemperature] = useState(0.2);
+  const [temperatureInput, setTemperatureInput] = useState('0.2');
   const [maxOutputTokens, setMaxOutputTokens] = useState(1024);
   const [maxOutputTokensInput, setMaxOutputTokensInput] = useState('1024');
   const [selectedPromptId, setSelectedPromptId] =
@@ -400,6 +418,10 @@ function App() {
   useEffect(() => {
     setContextLengthInput(String(contextLength));
   }, [contextLength]);
+
+  useEffect(() => {
+    setTemperatureInput(String(temperature));
+  }, [temperature]);
 
   useEffect(() => {
     setMaxOutputTokensInput(String(maxOutputTokens));
@@ -711,7 +733,7 @@ function App() {
       const result = await instance.createCompletion(formattedPrompt, {
         nPredict: maxOutputTokens,
         sampling: {
-          temp: 0.2,
+          temp: temperature,
           top_k: 40,
           top_p: 0.9,
         },
@@ -949,7 +971,7 @@ function App() {
       const result = await instance.createCompletion(formattedPrompt, {
         nPredict: maxOutputTokens,
         sampling: {
-          temp: 0.3,
+          temp: temperature,
           top_k: 40,
           top_p: 0.9,
         },
@@ -1264,6 +1286,7 @@ function App() {
     if (
       node.type === 'heading' ||
       node.type === 'paragraph' ||
+      node.type === 'image' ||
       node.type === 'callout' ||
       node.type === 'links'
     ) {
@@ -1635,6 +1658,58 @@ function App() {
                       onBlur={() => {
                         if (maxOutputTokensInput === '') {
                           setMaxOutputTokensInput(String(maxOutputTokens));
+                        }
+                      }}
+                      disabled={isBusy}
+                    />
+                  </label>
+                </div>
+                <div className="advanced-option">
+                  <div>
+                    <span className="runtime-label">Temperature</span>
+                    <h4>Adjust sampling randomness</h4>
+                    <p className="advanced-note">
+                      Lower values are more deterministic. Higher values are
+                      more varied and less predictable.
+                    </p>
+                  </div>
+                  <label className="field">
+                    <span>Temperature</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max="2"
+                      step="0.1"
+                      value={temperatureInput}
+                      onChange={(event) => {
+                        const { value } = event.target;
+                        setTemperatureInput(value);
+                        if (value === '') {
+                          return;
+                        }
+
+                        const nextValue = Number(value);
+                        if (
+                          Number.isFinite(nextValue) &&
+                          nextValue >= 0 &&
+                          nextValue <= 2
+                        ) {
+                          setTemperature(nextValue);
+                        }
+                      }}
+                      onBlur={() => {
+                        if (temperatureInput === '') {
+                          setTemperatureInput(String(temperature));
+                          return;
+                        }
+
+                        const nextValue = Number(temperatureInput);
+                        if (
+                          !Number.isFinite(nextValue) ||
+                          nextValue < 0 ||
+                          nextValue > 2
+                        ) {
+                          setTemperatureInput(String(temperature));
                         }
                       }}
                       disabled={isBusy}
