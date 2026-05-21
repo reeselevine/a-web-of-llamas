@@ -150,6 +150,7 @@ const BENCHMARK_WARMUP_PREFILL_TOKENS = 2;
 const BENCHMARK_WARMUP_DECODE_TOKENS = 1;
 const MAIN_STREAM_COMMIT_INTERVAL_MS = 150;
 const REWRITE_STREAM_COMMIT_INTERVAL_MS = 150;
+const LARGER_MODEL_SUGGESTION_THRESHOLD_BYTES = 2 * 1024 * 1024 * 1024;
 
 const toTokensPerSecond = (tokens: number, elapsedMs: number) =>
   elapsedMs > 0 ? (tokens * 1000) / elapsedMs : 0;
@@ -447,6 +448,13 @@ function App() {
     qwenModel?.sizeBytes &&
     effectiveWebGPUMemoryBudget &&
     qwenModel.sizeBytes > effectiveWebGPUMemoryBudget
+  );
+  const shouldSuggestLargerModel = !!(
+    qwenModel &&
+    webgpuMemoryBudget &&
+    webgpuMemoryBudget > LARGER_MODEL_SUGGESTION_THRESHOLD_BYTES &&
+    !qwenBlockedByBudget &&
+    selectedModelId === DEFAULT_DEMO_MODEL_ID
   );
   const promptHasContent =
     selectedPromptId === 'manual' ? manualPrompt.trim().length > 0 : true;
@@ -1439,6 +1447,25 @@ function App() {
                 >
                   Reset model
                 </button>
+              ) : null}
+              {shouldSuggestLargerModel ? (
+                <div className="model-suggestion">
+                  <p className="advanced-note">
+                    Detected WebGPU budget: {toHumanReadableSize(webgpuMemoryBudget)}.
+                    Want to try a larger {qwenModel.name} model instead?
+                  </p>
+                  <button
+                    type="button"
+                    className="inline-pill-button"
+                    onClick={() => {
+                      setSelectedModelId(qwenModel.id);
+                      setStatus(`Selected ${qwenModel.name}.`);
+                    }}
+                    disabled={isBusy}
+                  >
+                    Try {qwenModel.name}
+                  </button>
+                </div>
               ) : null}
             </div>
             <div className="button-row">
