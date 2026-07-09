@@ -1,9 +1,10 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import {
   isValidGgufFile,
+  type Model,
   ModelManager,
   Wllama,
-} from '@reeselevine/wllama-webgpu';
+} from '@wllama/wllama';
 import llamasSurfingImage from './content/llamas-surfing.png';
 import {
   DEFAULT_DEMO_MODEL_ID,
@@ -11,7 +12,7 @@ import {
   PROMPT_OPTIONS,
   WLLAMA_CONFIG_PATHS,
 } from './config';
-import { formatChat, type ChatMessage } from './chat';
+import { type ChatMessage } from './chat';
 import {
   type BlogNode,
   blogPost,
@@ -92,6 +93,45 @@ const getGgufOptionLabel = (file: string) => {
   return `${file} (${split.total} shards)`;
 };
 
+const getModelFileDisplayName = (file: string) => {
+  const decodedFile = decodeURIComponent(file);
+  const filename = decodedFile.split('/').pop() || decodedFile;
+  const split = parseSplitFile(filename);
+  const filenameWithoutShards = split
+    ? filename.replace(SPLIT_GGUF_REGEX, '$1.gguf')
+    : filename;
+  const name = filenameWithoutShards
+    .replace(/\.gguf$/i, '')
+    .replace(/-+/g, ' ')
+    .replace(/\b(q\d(?:_\d|_[km]|[km])?|iq\d_[a-z0-9_]+|f16|f32)\b/gi, (match) =>
+      match.toUpperCase().replace(/\s+/g, '_')
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return split ? `${name} (${split.total} shards)` : name || filename;
+};
+
+const getCachedModelName = (modelUrl: string) => {
+  const demoModel = DEMO_MODELS.find((model) => model.modelUrl === modelUrl);
+  if (demoModel) {
+    return demoModel.name;
+  }
+
+  try {
+    const url = new URL(modelUrl);
+    const [, , , , , ...fileParts] = url.pathname.split('/');
+    const file = fileParts.join('/');
+    if (file) {
+      return getModelFileDisplayName(file);
+    }
+  } catch {
+    // Fall back to the final path segment below.
+  }
+
+  return getModelFileDisplayName(modelUrl);
+};
+
 type ActiveModel = {
   id: string;
   name: string;
@@ -105,6 +145,7 @@ type RewriteState = {
   isLoading: boolean;
   style?: RewriteStyle;
   text?: string;
+  thinkingLines?: string[];
   error?: string;
 };
 type BenchmarkMetrics = {
@@ -151,6 +192,24 @@ const BENCHMARK_WARMUP_DECODE_TOKENS = 1;
 const MAIN_STREAM_COMMIT_INTERVAL_MS = 150;
 const REWRITE_STREAM_COMMIT_INTERVAL_MS = 150;
 const LARGER_MODEL_SUGGESTION_THRESHOLD_BYTES = 2 * 1024 * 1024 * 1024;
+const BENCHMARK_CONTEXT_RESERVE_TOKENS = 128;
+const DEFAULT_REASONING_BUDGET_TOKENS = 256;
+const getModelLoadOptions = (
+  enableReasoning: boolean,
+  reasoningBudgetTokens: number
+) => ({
+  reasoning: enableReasoning,
+  reasoning_format: enableReasoning ? undefined : ('none' as const),
+  reasoning_budget_tokens: enableReasoning
+    ? reasoningBudgetTokens
+    : undefined,
+  reasoning_budget_message: enableReasoning
+    ? 'Now provide the final answer.'
+    : undefined,
+  default_template_kwargs: {
+    enable_thinking: enableReasoning,
+  },
+});
 
 const toTokensPerSecond = (tokens: number, elapsedMs: number) =>
   elapsedMs > 0 ? (tokens * 1000) / elapsedMs : 0;
@@ -164,6 +223,24 @@ const getBenchmarkBackendLabel = (backend: BenchmarkBackend) =>
 const getBenchmarkThreadLabel = (instance: Wllama) =>
   instance.isMultithread() ? 'multi-thread' : 'single-thread';
 
+const getGpuLayersForBackend = (backend: BenchmarkBackend) =>
+  backend === 'webgpu' ? 99999 : 0;
+
+const getBenchmarkPromptTokenBudget = (nCtx: number) =>
+  Math.max(
+    32,
+    Math.min(
+      BENCHMARK_PROMPT_TOKEN_COUNT,
+      Math.floor(
+        (nCtx - BENCHMARK_DECODE_TOKEN_COUNT - BENCHMARK_CONTEXT_RESERVE_TOKENS) *
+          0.6
+      )
+    )
+  );
+
+const buildBenchmarkPrompt = (targetTokens: number) =>
+  Array.from({ length: targetTokens }, () => 'the').join(' ');
+
 const buildRewriteMessages = (
   paragraphText: string,
   style: RewriteStyle
@@ -175,6 +252,45 @@ const buildRewriteMessages = (
     },
   ];
 };
+
+const getChatCompletionDeltaParts = (chunk: unknown) => {
+  const delta = (chunk as {
+    choices?: Array<{
+      delta?: {
+        content?: string | null;
+        reasoning_content?: string | null;
+        reasoning?: string | null;
+      };
+    }>;
+  }).choices?.[0]?.delta;
+
+  return {
+    content: delta?.content ?? '',
+    thinking: delta?.reasoning_content ?? delta?.reasoning ?? '',
+  };
+};
+
+const stripThinkBlocks = (text: string) =>
+  text
+    .replace(/<think>\s*<\/think>/gi, '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<think>[\s\S]*$/i, '')
+    .trimStart();
+
+const extractThinkBlocks = (text: string) => {
+  const matches = text.matchAll(/<think>([\s\S]*?)(?:<\/think>|$)/gi);
+  return Array.from(matches, (match) => match[1]).join('\n');
+};
+
+const getRecentThinkingLines = (text: string) =>
+  text
+    .replace(/<\/?think>/gi, '')
+    .replace(/([.!?])\s+/g, '$1\n')
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(-3)
+    .map((line) => (line.length > 140 ? `${line.slice(0, 137)}...` : line));
 
 const buildPromptInput = (
   promptId: PromptSelection,
@@ -373,11 +489,19 @@ function App() {
   const [temperatureInput, setTemperatureInput] = useState('0.2');
   const [maxOutputTokens, setMaxOutputTokens] = useState(1024);
   const [maxOutputTokensInput, setMaxOutputTokensInput] = useState('1024');
+  const [enableReasoning, setEnableReasoning] = useState(false);
+  const [reasoningBudgetTokens, setReasoningBudgetTokens] = useState(
+    DEFAULT_REASONING_BUDGET_TOKENS
+  );
+  const [reasoningBudgetTokensInput, setReasoningBudgetTokensInput] = useState(
+    String(DEFAULT_REASONING_BUDGET_TOKENS)
+  );
   const [selectedPromptId, setSelectedPromptId] =
     useState<PromptSelection>('manual');
   const [manualPrompt, setManualPrompt] = useState(DEFAULT_MANUAL_PROMPT);
   const [isShowingPresetPrompt, setIsShowingPresetPrompt] = useState(false);
   const [output, setOutput] = useState('');
+  const [thinkingLines, setThinkingLines] = useState<string[]>([]);
   const [status, setStatus] = useState(
     'Load Gemma 3 270M IT to enable the demo.'
   );
@@ -386,9 +510,10 @@ function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRunningBenchmark, setIsRunningBenchmark] = useState(false);
   const [loadedModelId, setLoadedModelId] = useState<string | null>(null);
+  const [loadedModelUrl, setLoadedModelUrl] = useState<string | null>(null);
   const [runtimeSummary, setRuntimeSummary] = useState<string>('Not loaded');
   const [hasChatTemplate, setHasChatTemplate] = useState<boolean | null>(null);
-  const [cachedModelUrls, setCachedModelUrls] = useState<string[]>([]);
+  const [cachedModels, setCachedModels] = useState<Model[]>([]);
   const [cacheSizes, setCacheSizes] = useState<Record<string, number>>({});
   const [isRefreshingCache, setIsRefreshingCache] = useState(false);
   const [webgpuMemoryBudget, setWebgpuMemoryBudget] = useState<
@@ -415,6 +540,7 @@ function App() {
   const [activeBenchmarkMetric, setActiveBenchmarkMetric] =
     useState<ActiveBenchmarkMetric | null>(null);
   const wllamaRef = useRef<Wllama | null>(null);
+  const loadedBackendRef = useRef<BenchmarkBackend>('webgpu');
 
   useEffect(() => {
     setContextLengthInput(String(contextLength));
@@ -427,6 +553,10 @@ function App() {
   useEffect(() => {
     setMaxOutputTokensInput(String(maxOutputTokens));
   }, [maxOutputTokens]);
+
+  useEffect(() => {
+    setReasoningBudgetTokensInput(String(reasoningBudgetTokens));
+  }, [reasoningBudgetTokens]);
 
   const selectedModel =
     DEMO_MODELS.find((model) => model.id === selectedModelId) ??
@@ -547,7 +677,7 @@ function App() {
     setIsRefreshingCache(true);
     try {
       const models = await modelManager.getModels();
-      setCachedModelUrls(models.map((model) => model.url));
+      setCachedModels(models);
       setCacheSizes(
         Object.fromEntries(models.map((model) => [model.url, model.size]))
       );
@@ -563,6 +693,7 @@ function App() {
     await instance.exit();
     wllamaRef.current = null;
     setLoadedModelId(null);
+    setLoadedModelUrl(null);
     setRuntimeSummary('Not loaded');
     setHasChatTemplate(null);
     setBenchmarkResult(null);
@@ -573,25 +704,17 @@ function App() {
     await refreshCache();
   };
 
-  const clearModelContext = async (instance: Wllama) => {
-    try {
-      await instance.kvClear();
-    } catch (error) {
-      console.error('Failed to clear model context.', error);
-    }
-  };
+  const clearModelContext = async (_instance: Wllama) => {};
 
-  const getCurrentLoadedBackend = (instance: Wllama): BenchmarkBackend =>
-    instance.usingWebGPU() ? 'webgpu' : 'cpu';
+  const getCurrentLoadedBackend = (): BenchmarkBackend => loadedBackendRef.current;
 
   const ensureFreshInstance = async (backend: BenchmarkBackend = 'webgpu') => {
     if (wllamaRef.current) {
       await wllamaRef.current.exit();
     }
-    const instance = new Wllama(WLLAMA_CONFIG_PATHS, {
-      backend,
-    });
+    const instance = new Wllama(WLLAMA_CONFIG_PATHS);
     wllamaRef.current = instance;
+    loadedBackendRef.current = backend;
     return instance;
   };
 
@@ -605,26 +728,28 @@ function App() {
   ) => {
     const instance = await ensureFreshInstance(backend);
     await instance.loadModelFromUrl(model.modelUrl, {
+      ...getModelLoadOptions(enableReasoning, reasoningBudgetTokens),
       n_ctx: config.nCtx,
       n_batch: config.nBatch,
+      n_gpu_layers: getGpuLayersForBackend(backend),
     });
     return instance;
   };
 
   const snapshotLoadedModel = (): LoadedModelSnapshot | null => {
     const instance = wllamaRef.current;
-    if (!instance || !loadedModelId) {
+    if (!instance || !loadedModelId || !loadedModelUrl) {
       return null;
     }
 
     const loadedContextInfo = instance.getLoadedContextInfo();
     const loadedModel =
-      DEMO_MODELS.find((model) => model.id === loadedModelId) ??
-      (loadedModelId === 'custom' && customModelUrl
+      DEMO_MODELS.find((model) => model.modelUrl === loadedModelUrl) ??
+      (loadedModelId === 'custom'
         ? {
             id: 'custom',
-            name: customModelName,
-            modelUrl: customModelUrl,
+            name: getCachedModelName(loadedModelUrl),
+            modelUrl: loadedModelUrl,
           }
         : null);
 
@@ -636,7 +761,7 @@ function App() {
       id: loadedModel.id,
       name: loadedModel.name,
       modelUrl: loadedModel.modelUrl,
-      backend: getCurrentLoadedBackend(instance),
+      backend: getCurrentLoadedBackend(),
       nCtx: loadedContextInfo.n_ctx,
       nBatch: loadedContextInfo.n_batch,
     };
@@ -644,14 +769,16 @@ function App() {
 
   const applyLoadedModelState = (
     modelId: string,
+    modelUrl: string,
     instance: Wllama,
     statusMessage?: string
   ) => {
-    const usingWebGPU = instance.usingWebGPU();
+    const usingWebGPU = getCurrentLoadedBackend() === 'webgpu';
     const isMultithread = instance.isMultithread();
     const contextInfo = instance.getLoadedContextInfo();
 
     setLoadedModelId(modelId);
+    setLoadedModelUrl(modelUrl);
     setHasChatTemplate(!!instance.getChatTemplate());
     setRuntimeSummary(
       `${usingWebGPU ? 'WebGPU' : 'CPU'} • ${isMultithread ? 'multithread' : 'single-thread'} • ctx ${contextInfo.n_ctx}`
@@ -665,6 +792,7 @@ function App() {
 
   const clearLoadedModelState = () => {
     setLoadedModelId(null);
+    setLoadedModelUrl(null);
     setRuntimeSummary('Not loaded');
     setHasChatTemplate(null);
     setDownloadProgress(null);
@@ -683,18 +811,25 @@ function App() {
         : `WebGPU is not supported in this browser. Loading ${activeModel.name} with CPU fallback...`
     );
     try {
-      const instance = await ensureFreshInstance();
+      const instance = await ensureFreshInstance(
+        webgpuSupported ? 'webgpu' : 'cpu'
+      );
       await instance.loadModelFromUrl(activeModel.modelUrl, {
+        ...getModelLoadOptions(enableReasoning, reasoningBudgetTokens),
         n_ctx: contextLength,
         n_batch: 256,
+        n_gpu_layers: getGpuLayersForBackend(
+          webgpuSupported ? 'webgpu' : 'cpu'
+        ),
         progressCallback: ({ loaded, total }) => {
           setDownloadProgress(total > 0 ? loaded / total : 0);
         },
       });
       applyLoadedModelState(
         activeModel.id,
+        activeModel.modelUrl,
         instance,
-        instance.usingWebGPU()
+        getCurrentLoadedBackend() === 'webgpu'
           ? `${activeModel.name} is ready.`
           : `${activeModel.name} is ready, but WebGPU is unavailable so it is running on CPU.`
       );
@@ -712,54 +847,70 @@ function App() {
 
   const runPrompt = async () => {
     const instance = wllamaRef.current;
-    if (!instance || loadedModelId !== activeModel.id) {
+    if (!instance || loadedModelUrl !== activeModel.modelUrl) {
       setStatus('Load the selected model before generating.');
       return;
     }
     setIsGenerating(true);
     setOutput('');
+    setThinkingLines([]);
     setStatus('Generating output...');
     try {
-      const promptInput = buildPromptInput(
-        selectedPromptId,
-        manualPrompt,
-        buildSummaryPromptSource(BLOG_NODES, isIPhone)
-      );
-      const formattedPrompt = await formatChat(instance, [
+      const messages: ChatMessage[] = [
         {
           role: 'user',
-          content: promptInput,
+          content: buildPromptInput(
+            selectedPromptId,
+            manualPrompt,
+            buildSummaryPromptSource(BLOG_NODES, isIPhone)
+          ),
         },
-      ]);
-      console.info('[prompt] rawPrompt', {
-        selectedPromptId,
-        currentPrompt: promptInput,
-      });
+      ];
       let streamedText = '';
+      let streamedThinking = '';
       let lastCommittedText = '';
       let lastCommitTime = 0;
-      const result = await instance.createCompletion(formattedPrompt, {
-        nPredict: maxOutputTokens,
-        sampling: {
-          temp: temperature,
-          top_k: 40,
-          top_p: 0.9,
-        },
-        onNewToken(_token, _piece, currentText) {
-          streamedText = currentText;
-          const now = performance.now();
-          if (
-            currentText !== lastCommittedText &&
-            now - lastCommitTime >= MAIN_STREAM_COMMIT_INTERVAL_MS
-          ) {
-            lastCommittedText = currentText;
-            lastCommitTime = now;
-            setOutput(currentText);
-          }
-        },
+      const stream = await instance.createChatCompletion({
+        messages,
+        max_tokens: maxOutputTokens,
+        temperature,
+        top_k: 40,
+        top_p: 0.9,
+        stream: true,
       });
-      setOutput(result.trim() || streamedText || result);
-      setStatus('Generation complete.');
+      for await (const chunk of stream) {
+        const delta = getChatCompletionDeltaParts(chunk);
+        if (!delta.content && !delta.thinking) {
+          continue;
+        }
+        streamedText += delta.content;
+        streamedThinking += delta.thinking;
+        const visibleText = stripThinkBlocks(streamedText);
+        const nextThinkingLines = visibleText.trim()
+          ? []
+          : getRecentThinkingLines(
+              `${streamedThinking}\n${extractThinkBlocks(streamedText)}`
+            );
+        const now = performance.now();
+        const streamStateKey = `${streamedText}\n${streamedThinking}`;
+        if (
+          streamStateKey !== lastCommittedText &&
+          now - lastCommitTime >= MAIN_STREAM_COMMIT_INTERVAL_MS
+        ) {
+          lastCommittedText = streamStateKey;
+          lastCommitTime = now;
+          setOutput(visibleText);
+          setThinkingLines(nextThinkingLines);
+        }
+      }
+      const finalText = stripThinkBlocks(streamedText).trim();
+      setOutput(finalText);
+      setThinkingLines([]);
+      setStatus(
+        !finalText && streamedThinking
+          ? 'Generation stopped during reasoning. Increase max output tokens or lower the reasoning budget.'
+          : 'Generation complete.'
+      );
     } catch (error) {
       console.error(error);
       setStatus(
@@ -767,6 +918,7 @@ function App() {
       );
     } finally {
       await clearModelContext(instance);
+      setThinkingLines([]);
       setIsGenerating(false);
     }
   };
@@ -792,6 +944,9 @@ function App() {
         nCtx: contextLength,
         nBatch: 256,
       };
+      const estimatedPromptTokens = getBenchmarkPromptTokenBudget(
+        benchmarkLoadConfig.nCtx
+      );
 
       setBenchmarkResult({
         runs: benchmarkBackends.map((backend) => ({
@@ -800,16 +955,10 @@ function App() {
           threadLabel: undefined,
           completed: false,
           repetitions: BENCHMARK_REPETITIONS,
-          promptTokens: Math.min(
-            BENCHMARK_PROMPT_TOKEN_COUNT,
-            benchmarkLoadConfig.nBatch
-          ),
+          promptTokens: estimatedPromptTokens,
           prefill: {
             elapsedMs: 0,
-            tokens: Math.min(
-              BENCHMARK_PROMPT_TOKEN_COUNT,
-              benchmarkLoadConfig.nBatch
-            ),
+            tokens: estimatedPromptTokens,
             tokensPerSecond: 0,
           },
           decode: {
@@ -834,33 +983,40 @@ function App() {
           benchmarkLoadConfig
         );
         const contextInfo = instance.getLoadedContextInfo();
-        const prefillTokenCount = Math.min(
-          BENCHMARK_PROMPT_TOKEN_COUNT,
-          contextInfo.n_batch
+        const prefillTokenCount = getBenchmarkPromptTokenBudget(
+          contextInfo.n_ctx
         );
+        const benchmarkPrompt = buildBenchmarkPrompt(prefillTokenCount);
 
-        await instance._testBenchmark(
-          'pp',
-          Math.min(BENCHMARK_WARMUP_PREFILL_TOKENS, prefillTokenCount)
-        );
-        await instance._testBenchmark('tg', BENCHMARK_WARMUP_DECODE_TOKENS);
+        await instance.createCompletion({
+          prompt: 'warmup',
+          max_tokens: Math.max(
+            BENCHMARK_WARMUP_PREFILL_TOKENS,
+            BENCHMARK_WARMUP_DECODE_TOKENS
+          ),
+          temperature: 0,
+          top_k: 1,
+        });
 
         setActiveBenchmarkMetric({
           backend,
           metric: 'prefill',
         });
-        const prefillResult = await instance._testBenchmark(
-          'pp',
-          prefillTokenCount
-        );
+        const benchmarkResult = await instance.createCompletion({
+          prompt: benchmarkPrompt,
+          max_tokens: BENCHMARK_DECODE_TOKEN_COUNT,
+          temperature: 0,
+          top_k: 1,
+        });
         setActiveBenchmarkMetric({
           backend,
           metric: 'decode',
         });
-        const decodeResult = await instance._testBenchmark(
-          'tg',
-          BENCHMARK_DECODE_TOKEN_COUNT
-        );
+        const timings = benchmarkResult.timings;
+        const usage = benchmarkResult.usage;
+        if (!timings) {
+          throw new Error('Benchmark timings are unavailable.');
+        }
 
         const completedRun: BenchmarkRunResult = {
           backend,
@@ -868,22 +1024,16 @@ function App() {
           threadLabel: getBenchmarkThreadLabel(instance),
           completed: true,
           repetitions: BENCHMARK_REPETITIONS,
-          promptTokens: prefillTokenCount,
+          promptTokens: usage.prompt_tokens,
           prefill: {
-            elapsedMs: prefillResult.t_ms,
-            tokens: prefillTokenCount,
-            tokensPerSecond: toTokensPerSecond(
-              prefillTokenCount,
-              prefillResult.t_ms
-            ),
+            elapsedMs: timings.prompt_ms,
+            tokens: usage.prompt_tokens,
+            tokensPerSecond: timings.prompt_per_second,
           },
           decode: {
-            elapsedMs: decodeResult.t_ms,
-            tokens: BENCHMARK_DECODE_TOKEN_COUNT,
-            tokensPerSecond: toTokensPerSecond(
-              BENCHMARK_DECODE_TOKEN_COUNT,
-              decodeResult.t_ms
-            ),
+            elapsedMs: timings.predicted_ms,
+            tokens: usage.completion_tokens,
+            tokensPerSecond: timings.predicted_per_second,
           },
         };
 
@@ -918,7 +1068,11 @@ function App() {
               nBatch: previousLoadedModel.nBatch,
             }
           );
-          applyLoadedModelState(previousLoadedModel.id, restoredInstance);
+          applyLoadedModelState(
+            previousLoadedModel.id,
+            previousLoadedModel.modelUrl,
+            restoredInstance
+          );
         } else {
           const instance = wllamaRef.current;
           if (instance) {
@@ -949,7 +1103,7 @@ function App() {
     style: RewriteStyle
   ) => {
     const instance = wllamaRef.current;
-    if (!instance || loadedModelId !== activeModel.id) {
+    if (!instance || loadedModelUrl !== activeModel.modelUrl) {
       setStatus('Load the selected model before generating a rewrite.');
       return;
     }
@@ -961,58 +1115,60 @@ function App() {
         isLoading: true,
         style,
         text: '',
+        thinkingLines: [],
         error: undefined,
       },
     }));
 
     try {
       const rewriteMessages = buildRewriteMessages(paragraphText, style);
-      const formattedPrompt = await formatChat(instance, rewriteMessages);
       let streamedText = '';
+      let streamedThinking = '';
       let lastCommittedText = '';
       let lastCommitTime = 0;
-      console.info('[rewrite] rawPrompt', {
-        nodeId,
-        style,
+      const stream = await instance.createChatCompletion({
         messages: rewriteMessages,
+        max_tokens: maxOutputTokens,
+        temperature,
+        top_k: 40,
+        top_p: 0.9,
+        stream: true,
       });
-      const result = await instance.createCompletion(formattedPrompt, {
-        nPredict: maxOutputTokens,
-        sampling: {
-          temp: temperature,
-          top_k: 40,
-          top_p: 0.9,
-        },
-        onNewToken(_token, _piece, currentText) {
-          streamedText = currentText;
-          const now = performance.now();
-          if (
-            currentText !== lastCommittedText &&
-            now - lastCommitTime >= REWRITE_STREAM_COMMIT_INTERVAL_MS
-          ) {
-            lastCommittedText = currentText;
-            lastCommitTime = now;
-            setRewriteOutputs((current) => ({
-              ...current,
-              [nodeId]: {
-                ...current[nodeId],
-                isLoading: true,
-                style,
-                text: currentText,
-                error: undefined,
-              },
-            }));
-          }
-        },
-      });
-      const finalText = (result.trim() || streamedText || result).trim();
-      console.info('[rewrite] result', {
-        nodeId,
-        style,
-        result,
-        streamedText,
-        finalText,
-      });
+      for await (const chunk of stream) {
+        const delta = getChatCompletionDeltaParts(chunk);
+        if (!delta.content && !delta.thinking) {
+          continue;
+        }
+        streamedText += delta.content;
+        streamedThinking += delta.thinking;
+        const visibleText = stripThinkBlocks(streamedText);
+        const nextThinkingLines = visibleText.trim()
+          ? []
+          : getRecentThinkingLines(
+              `${streamedThinking}\n${extractThinkBlocks(streamedText)}`
+            );
+        const now = performance.now();
+        const streamStateKey = `${streamedText}\n${streamedThinking}`;
+        if (
+          streamStateKey !== lastCommittedText &&
+          now - lastCommitTime >= REWRITE_STREAM_COMMIT_INTERVAL_MS
+        ) {
+          lastCommittedText = streamStateKey;
+          lastCommitTime = now;
+          setRewriteOutputs((current) => ({
+            ...current,
+            [nodeId]: {
+              ...current[nodeId],
+              isLoading: true,
+              style,
+              text: visibleText,
+              thinkingLines: nextThinkingLines,
+              error: undefined,
+            },
+          }));
+        }
+      }
+      const finalText = stripThinkBlocks(streamedText).trim();
 
       setRewriteOutputs((current) => ({
         ...current,
@@ -1020,6 +1176,7 @@ function App() {
           isLoading: false,
           style,
           text: finalText,
+          thinkingLines: [],
         },
       }));
     } catch (error) {
@@ -1029,6 +1186,7 @@ function App() {
         [nodeId]: {
           isLoading: false,
           style,
+          thinkingLines: [],
           error: error instanceof Error ? error.message : 'Unknown error',
         },
       }));
@@ -1036,10 +1194,6 @@ function App() {
       await clearModelContext(instance);
     }
   };
-
-  const loadedModelUrl = DEMO_MODELS.find(
-    (model) => model.id === loadedModelId
-  )?.modelUrl ?? (loadedModelId === 'custom' ? customModelUrl ?? undefined : undefined);
 
   const removeCachedModel = async (modelUrl: string) => {
     setStatus('Removing cached model...');
@@ -1063,10 +1217,26 @@ function App() {
     }
   };
 
-  const cachedDemoModels = DEMO_MODELS.filter((model) =>
-    cachedModelUrls.includes(model.modelUrl)
-  );
-  const isActiveModelLoaded = loadedModelId === activeModel.id;
+  const cachedModelRows = cachedModels.map((model) => ({
+    key: model.url,
+    name: getCachedModelName(model.url),
+    url: model.url,
+    size: model.size,
+  }));
+  const selectCachedModel = (model: (typeof cachedModelRows)[number]) => {
+    const demoModel = DEMO_MODELS.find((entry) => entry.modelUrl === model.url);
+    if (demoModel) {
+      setSelectedModelId(demoModel.id);
+      setStatus(`Selected ${demoModel.name}.`);
+      return;
+    }
+
+    setCustomModelUrl(model.url);
+    setCustomModelName(model.name);
+    setSelectedModelId('custom');
+    setStatus(`Selected ${model.name}.`);
+  };
+  const isActiveModelLoaded = loadedModelUrl === activeModel.modelUrl;
   const benchmarkDisplayBackends = getBenchmarkBackends(
     hasWebGPUSupport(),
     benchmarkSelection
@@ -1133,6 +1303,33 @@ function App() {
     >
       {isLoadingModel ? 'Loading...' : label}
     </button>
+  );
+
+  const renderThinkingIndicator = (label = 'Thinking') => (
+    <span className="thinking-indicator" role="status" aria-live="polite">
+      <span>{label}</span>
+      <span className="thinking-dots" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+    </span>
+  );
+
+  const renderThinkingTrace = (
+    lines: string[],
+    label = enableReasoning ? 'Thinking' : 'Preparing'
+  ) => (
+    <div className="thinking-trace">
+      {renderThinkingIndicator(label)}
+      {lines.length > 0 ? (
+        <div className="thinking-lines">
+          {lines.map((line, index) => (
+            <p key={`${index}-${line}`}>{line}</p>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 
   const formatBenchmarkMetricText = (
@@ -1218,7 +1415,7 @@ function App() {
                 </span>
               </div>
               {benchmarkDisplayRuns.map((run) => (
-                <div className="benchmark-bar-row">
+                <div key={`prefill-${run.backend}`} className="benchmark-bar-row">
                   <span>{benchmarkRunLabel(run)}</span>
                   <div className="benchmark-bar-track" aria-hidden="true">
                     <div
@@ -1250,7 +1447,7 @@ function App() {
                 </span>
               </div>
               {benchmarkDisplayRuns.map((run) => (
-                <div className="benchmark-bar-row">
+                <div key={`decode-${run.backend}`} className="benchmark-bar-row">
                   <span>{benchmarkRunLabel(run)}</span>
                   <div className="benchmark-bar-track" aria-hidden="true">
                     <div
@@ -1394,8 +1591,10 @@ function App() {
                 </div>
               ) : null}
             </div>
-            {rewriteState?.isLoading ? (
-              <p className="advanced-note">Rewriting...</p>
+            {rewriteState?.isLoading && !rewriteState.text ? (
+              <div className="advanced-note">
+                {renderThinkingTrace(rewriteState.thinkingLines ?? [])}
+              </div>
             ) : null}
             {rewriteState?.error ? (
               <p className="advanced-warning">{rewriteState.error}</p>
@@ -1421,7 +1620,7 @@ function App() {
                   : 'Current model'}
               </span>
               <h4>{activeModel.name}</h4>
-              {loadedModelId === activeModel.id ? (
+              {isActiveModelLoaded ? (
                 <p
                   className={`runtime-support ${runtimeSummary.startsWith('WebGPU') ? 'supported' : 'unsupported'}`}
                 >
@@ -1472,7 +1671,7 @@ function App() {
               <button
                 type="button"
                 onClick={loadSelectedModel}
-                disabled={isBusy || loadedModelId === activeModel.id}
+                disabled={isBusy || isActiveModelLoaded}
               >
                 {isLoadingModel ? 'Loading...' : 'Load model'}
               </button>
@@ -1492,7 +1691,7 @@ function App() {
                 <span className="runtime-label">Download progress</span>
                 <span>
                   {downloadProgress === null
-                    ? loadedModelId === activeModel.id
+                    ? isActiveModelLoaded
                       ? 'Cached and ready'
                       : 'Idle'
                     : `${Math.round(downloadProgress * 100)}%`}
@@ -1604,9 +1803,9 @@ function App() {
                       setCustomModelUrl(
                         `https://huggingface.co/${repo}/resolve/main/${customFile}`
                       );
-                      setCustomModelName(`${repo}/${customFile}`);
+                      setCustomModelName(getModelFileDisplayName(customFile));
                       setSelectedModelId('custom');
-                      setStatus(`Selected ${repo}/${customFile}.`);
+                      setStatus(`Selected ${getModelFileDisplayName(customFile)}.`);
                     }}
                     disabled={
                       isBusy ||
@@ -1616,6 +1815,66 @@ function App() {
                   >
                     Use custom model
                   </button>
+                </div>
+                <div className="advanced-option">
+                  <div>
+                    <span className="runtime-label">Reasoning</span>
+                    <h4>Enable model reasoning mode</h4>
+                    <p className="advanced-note">
+                      Applies the next time a model is loaded. Thinking blocks
+                      are hidden from the visible answer.
+                    </p>
+                  </div>
+                  <label className="toggle-field">
+                    <input
+                      type="checkbox"
+                      checked={enableReasoning}
+                      onChange={(event) => {
+                        setEnableReasoning(event.target.checked);
+                        if (loadedModelUrl) {
+                          setStatus(
+                            'Reasoning setting updated. Reload the selected model to apply it.'
+                          );
+                        }
+                      }}
+                      disabled={isBusy}
+                    />
+                    <span>Enable reasoning</span>
+                  </label>
+                  <label className="field">
+                    <span>Reasoning budget tokens</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={reasoningBudgetTokensInput}
+                      onChange={(event) => {
+                        const { value } = event.target;
+                        setReasoningBudgetTokensInput(value);
+                        if (value === '') {
+                          return;
+                        }
+
+                        const nextValue = Number(value);
+                        if (Number.isFinite(nextValue) && nextValue >= 0) {
+                          setReasoningBudgetTokens(Math.floor(nextValue));
+                          if (loadedModelUrl) {
+                            setStatus(
+                              'Reasoning setting updated. Reload the selected model to apply it.'
+                            );
+                          }
+                        }
+                      }}
+                      onBlur={() => {
+                        if (reasoningBudgetTokensInput === '') {
+                          setReasoningBudgetTokensInput(
+                            String(reasoningBudgetTokens)
+                          );
+                        }
+                      }}
+                      disabled={isBusy || !enableReasoning}
+                    />
+                  </label>
                 </div>
                 <div className="advanced-option">
                   <div>
@@ -1761,32 +2020,49 @@ function App() {
                     {isRefreshingCache ? 'Refreshing...' : 'Refresh'}
                   </button>
                 </div>
-                {cachedDemoModels.length === 0 ? (
+                {cachedModelRows.length === 0 ? (
                   <p className="cache-empty">
-                    None of the demo models are cached locally yet.
+                    No models are cached locally yet.
                   </p>
                 ) : (
                   <ul className="cache-list">
-                    {cachedDemoModels.map((model) => (
-                      <li key={model.id} className="cache-item">
+                    {cachedModelRows.map((model) => (
+                      <li key={model.key} className="cache-item">
                         <div>
                           <strong>{model.name}</strong>
                           <p>
-                            {toHumanReadableSize(cacheSizes[model.modelUrl] ?? 0)}
+                            {toHumanReadableSize(cacheSizes[model.url] ?? model.size)}
                           </p>
                         </div>
-                        <button
-                          type="button"
-                          className="inline-action danger-action"
-                          onClick={() => {
-                            removeCachedModel(model.modelUrl).catch(
-                              console.error
-                            );
-                          }}
-                          disabled={isBusy}
-                        >
-                          Remove
-                        </button>
+                        <div className="cache-actions">
+                          <button
+                            type="button"
+                            className="inline-action"
+                            onClick={() => {
+                              selectCachedModel(model);
+                            }}
+                            disabled={isBusy || activeModel.modelUrl === model.url}
+                          >
+                            {loadedModelUrl === model.url &&
+                            activeModel.modelUrl === model.url
+                              ? 'Loaded'
+                              : activeModel.modelUrl === model.url
+                                ? 'Selected'
+                                : 'Use'}
+                          </button>
+                          <button
+                            type="button"
+                            className="inline-action danger-action"
+                            onClick={() => {
+                              removeCachedModel(model.url).catch(
+                                console.error
+                              );
+                            }}
+                            disabled={isBusy}
+                          >
+                            Remove
+                          </button>
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -1820,7 +2096,7 @@ function App() {
                 }}
                 disabled={
                   isBusy ||
-                  loadedModelId !== activeModel.id ||
+                  !isActiveModelLoaded ||
                   !promptHasContent
                 }
               >
@@ -1873,7 +2149,10 @@ function App() {
               </>
             ) : null}
             <div className="output-text">
-              {output || 'Model output will appear here.'}
+              {output ||
+                (isGenerating
+                  ? renderThinkingTrace(thinkingLines)
+                  : 'Model output will appear here.')}
             </div>
           </div>
         </div>

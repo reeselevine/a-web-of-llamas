@@ -1,6 +1,8 @@
-import WasmFromPackage from '@reeselevine/wllama-webgpu/esm/wasm-from-package.js';
+import wllamaWasm from '@wllama/wllama/src/wasm/wllama.wasm?url';
 
-export const WLLAMA_CONFIG_PATHS = WasmFromPackage;
+export const WLLAMA_CONFIG_PATHS = {
+  default: wllamaWasm,
+};
 
 export type DemoModel = {
   id: string;
